@@ -28,3 +28,27 @@ An automated, secure Threat Intelligence Agent designed for Security Operations 
 2. Install dependencies:
    ```bash
    pip install -r requirements.txt
+
+
+## 🤖 Setting up your Telegram Bot
+
+To receive these alerts, you need to register a bot with Telegram and obtain your Chat ID.
+
+### 1. Create your Telegram Bot
+1. Open Telegram and search for **@BotFather**.
+2. Click **Start** and send the command `/newbot`.
+3. Follow the instructions to give your bot a **Name** and a **Username** (must end in `_bot`).
+4. Once created, BotFather will provide an **API Token**. Keep this safe; this is your `TELEGRAM_BOT_TOKEN`.
+
+### 2. Obtain your Chat ID
+1. Search for **@userinfobot** in Telegram and start a chat.
+2. Send any message to it. It will reply with your numerical **Id**. This is your `TELEGRAM_CHAT_ID`.
+
+### 3. Initialize the Bot
+1. Search for your new bot in Telegram by its username and click **Start**.
+2. You must interact with the bot once (send "Hello") so the bot is authorized to send you messages.
+
+*Note: Your `.env` file should now look like this:*
+```env
+TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ
+TELEGRAM_CHAT_ID=987654321
