@@ -1,93 +1,99 @@
 import os
+import json
+import requests
+import feedparser
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import tool
-import requests
-import feedparser
 
-# Load environment variables from the local .env file
+# Load environment variables
 load_dotenv()
-
-# Retrieve credentials safely
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+HISTORY_FILE = "sent_items.json"
 
-# 1. Initialize the AI (Set temperature to 0 for deterministic, reliable output)
+# 1. Initialize the AI (Deterministic)
 llm = ChatOllama(model="llama3.1", temperature=0)
 
-# 2. STANDARD FUNCTION: Fetch data reliably via Python
-def fetch_rss_threat_intel() -> str:
-    """Standard Python function to fetch the latest threat data reliably."""
-    try:
-        print("[SYSTEM] Fetching live XML data from The Hacker News...")
-        feed_url = "https://feeds.feedburner.com/TheHackersNews"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        
-        response = requests.get(feed_url, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            return "ERROR: Feed down."
-            
-        feed = feedparser.parse(response.content)
-        if not feed.entries:
-            return "ERROR: No news."
-            
-        top_alert = feed.entries[0]
-        title = top_alert.get('title', 'No title')
-        summary = top_alert.get('summary', top_alert.get('description', 'No summary'))
-        link = top_alert.get('link', 'No link')
-        
-        return f"Title: {title}\nSummary: {summary}\nLink: {link}"
-    except Exception as e:
-        return f"ERROR: {str(e)}"
+# 2. History Management
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
+    return []
 
-# 3. AI TOOL: Telegram Delivery via safe environment variables
+def save_history(history):
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history[-100:], f)  # Keep last 100 to avoid file bloat
+
+# 3. Data Ingestion: Scans multiple feeds and multiple entries per feed
+def fetch_new_threat(sent_items):
+    # List of RSS feeds to monitor
+    feed_urls = [
+        "https://feeds.feedburner.com/TheHackersNews",
+        "https://www.bleepingcomputer.com/feed/"
+    ]
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    
+    for url in feed_urls:
+        try:
+            print(f"[SYSTEM] Scanning feed: {url}")
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                feed = feedparser.parse(response.content)
+                # Check top 5 entries of each feed
+                for entry in feed.entries[:5]: 
+                    entry_id = entry.get('link')
+                    if entry_id not in sent_items:
+                        return entry, None # Found a new one!
+        except Exception as e:
+            print(f"[SYSTEM] Error scanning {url}: {e}")
+            continue
+            
+    return None, "No new alerts found across all feeds."
+
+# 4. AI Tool
 @tool
 def send_background_telegram(message_content: str) -> str:
     """Sends the finalized threat briefing to the user via Telegram."""
-    
-    # Validation step to ensure credentials loaded correctly
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[TELEGRAM] CRITICAL ERROR: Environment variables are missing or unreadable!")
         return "FAILED: Missing environment configuration."
     
-    try:
-        print(f"\n[AUTOMATION] Firing summary to Telegram...")
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message_content}
-        
-        response = requests.post(url, json=payload, timeout=10)
-        
-        if response.status_code == 200:
-            print("[TELEGRAM] Success! Message pushed to device.")
-            return "SUCCESS: Message delivered."
-        else:
-            print(f"[TELEGRAM] Error Details: {response.text}")
-            return f"FAILED. API said: {response.text}"
-    except Exception as e:
-        return f"FAILED to execute Telegram API: {str(e)}"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message_content}
+    response = requests.post(url, json=payload, timeout=10)
+    
+    return "SUCCESS" if response.status_code == 200 else f"FAILED: {response.text}"
 
-# Bind only the communication tool to the agent
+# Setup Agent
 tools = [send_background_telegram]
 agent_executor = create_react_agent(llm, tools)
 
+# 5. EXECUTION LOGIC
 print("--- Activating Background Cybersecurity Agent ---")
 
-# 4. EXECUTION: Fetch, context-inject, and run
-latest_news = fetch_rss_threat_intel()
+sent_items = load_history()
+top_alert, error = fetch_new_threat(sent_items)
 
-if "ERROR" in latest_news:
-    print(f"Stopping execution due to fetch error: {latest_news}")
+if error:
+    print(f"[SYSTEM] {error}")
 else:
+    print(f"[SYSTEM] New threat found: {top_alert.get('title')}. Processing...")
+    
     task = f"""
     You are an expert SOC Engineer and Threat Intelligence Analyst. 
-    Analyze the following live threat data and compile a highly professional, beautiful, and actionable advisory:
+    Analyze the following threat data and compile a highly professional, actionable advisory:
     
-    {latest_news}
+    Title: {top_alert.get('title')}
+    Summary: {top_alert.get('summary')}
+    Link: {top_alert.get('link')}
     
-    Your response MUST follow this exact layout, using clear emojis, bolding, and simple structural lines. Do not include any introductory filler text. Start directly with the alert.
-
+    Response format:
+    
     🚨 THREAT INTEL ADVISORY 🚨
     Title: [Insert exact Title here]
     -------------------------------------------
@@ -105,8 +111,14 @@ else:
     
     -------------------------------------------
     🔗 Source: [Insert Link here]
+    
     """
     
-    response = agent_executor.invoke({"messages": [("user", task)]})
+    agent_executor.invoke({"messages": [("user", task)]})
+    
+    # Update and save history
+    sent_items.append(top_alert.get('link'))
+    save_history(sent_items)
+    print("[SYSTEM] Alert processed and history updated.")
 
 print("\n--- AI Agent Run Sequence Terminated ---")
